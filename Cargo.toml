@@ -1,0 +1,9 @@
+[package]
+name = "rchip16"
+version = "0.1.0"
+authors = ["FlyingGaz <FlyingGaz@users.noreply.github.com>"]
+
+[dependencies]
+rand = "0.3.18"
+minifb = "0.10.3"
+cpal = "0.6.0"
