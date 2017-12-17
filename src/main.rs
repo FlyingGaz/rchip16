@@ -71,7 +71,6 @@ fn main() {
 
         cpu.set_input(read_input(&win));
 
-        /* BENCH */ let dbg_start = Instant::now();
         for _ in 0..frame_instr {
             debugger.step(&mut cpu);
             cpu.step();
