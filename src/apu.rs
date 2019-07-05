@@ -1,9 +1,12 @@
+use std::cmp::max;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use cpal;
 
-use rand::{weak_rng, Rng, XorShiftRng};
+use rand::{Rng, SeedableRng};
+use rand::rngs::SmallRng;
+use rand::distributions::Uniform;
 
 static ATTACK: [u32; 16] = [2, 8, 16, 24, 38, 56, 68, 80, 100, 250, 500, 800, 1000, 3000, 5000, 8000];
 static DECAY: [u32; 16] = [6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000, 24000];
@@ -13,11 +16,11 @@ pub struct Apu {
     max_volume: f32,
 
     _handle: thread::JoinHandle<()>,
-    voice_id: cpal::VoiceId,
     event_loop: Arc<cpal::EventLoop>,
-    gen: Arc<Mutex<Option<Generator>>>,
+    stream_id: cpal::StreamId,
+    gen: Arc<Mutex<Generator>>,
 
-    samples_rate: u32,
+    sample_rate: u32,
 
     wave: Wave,
     volume: f32,
@@ -30,53 +33,58 @@ pub struct Apu {
 impl Apu {
     /// Create a new audio processing
     pub fn new(max_volume: f32) -> Apu {
-        let endpoint = cpal::default_endpoint().expect("Failed to get default endpoint");
-        let format = endpoint.supported_formats().ok().and_then(|mut f| f.next())
-            .expect("Failed to get endpoint format").with_max_samples_rate();
+        let device = cpal::default_output_device().expect("Failed to get default output device");
+        let format = device.default_output_format().expect("Failed to get default output format");
 
         let event_loop = Arc::new(cpal::EventLoop::new());
-        let voice_id = event_loop.build_voice(&endpoint, &format).expect("Failed to build voice");
+        let stream_id = event_loop.build_output_stream(&device, &format).expect("Failed to build output stream");
 
-        let samples_rate = format.samples_rate.0;
+        let gen = Arc::new(Mutex::new(Generator::silence()));
 
-        let gen = Arc::new(Mutex::new(None));
+        let sample_rate = format.sample_rate.0;
 
         let handle = {
             let event_loop = event_loop.clone();
             let gen = gen.clone();
-            thread::Builder::new().name("audio".into()).spawn(move || event_loop.run(|_, buffer|
-                if let Some(ref mut gen) = *gen.lock().unwrap() {
-                    match buffer {
-                        cpal::UnknownTypeBuffer::U16(mut buffer) => {
-                            for (sample, value) in buffer.chunks_mut(format.channels.len()).zip(gen) {
-                                let value = ((value * 0.5 + 0.5) * u16::max_value() as f32) as u16;
-                                for out in sample.iter_mut() { *out = value }
-                            }
-                        },
-                        cpal::UnknownTypeBuffer::I16(mut buffer) => {
-                            for (sample, value) in buffer.chunks_mut(format.channels.len()).zip(gen) {
-                                let value = (value * i16::max_value() as f32) as i16;
-                                for out in sample.iter_mut() { *out = value }
-                            }
-                        },
-                        cpal::UnknownTypeBuffer::F32(mut buffer) => {
-                            for (sample, value) in buffer.chunks_mut(format.channels.len()).zip(gen) {
-                                for out in sample.iter_mut() { *out = value }
-                            }
-                        },
-                    }
-                })).unwrap()
+            thread::spawn(move || event_loop.run(|stream_id, data| {
+                let ref mut gen = *gen.lock().unwrap();
+
+                if gen.is_finished() {
+                    event_loop.pause_stream(stream_id);
+                }
+
+                match data {
+                    cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer) } => {
+                        for (sample, value) in buffer.chunks_mut(format.channels as usize).zip(gen) {
+                            let value = ((value * 0.5 + 0.5) * u16::max_value() as f32) as u16;
+                            for out in sample.iter_mut() { *out = value }
+                        }
+                    },
+                    cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
+                        for (sample, value) in buffer.chunks_mut(format.channels as usize).zip(gen) {
+                            let value = (value * i16::max_value() as f32) as i16;
+                            for out in sample.iter_mut() { *out = value }
+                        }
+                    },
+                    cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer) } => {
+                        for (sample, value) in buffer.chunks_mut(format.channels as usize).zip(gen) {
+                            for out in sample.iter_mut() { *out = value }
+                        }
+                    },
+                    _ => {},
+                }
+            }))
         };
 
         Apu {
             max_volume,
 
             _handle: handle,
-            voice_id,
             event_loop,
+            stream_id,
             gen,
 
-            samples_rate,
+            sample_rate,
 
             wave: Wave::Pulse,
             volume: 1.0,
@@ -99,24 +107,27 @@ impl Apu {
     /// Play a sound with a frequency given in hz for a duration given in ms
     pub fn play(&mut self, frequency: u16, duration: u16, adsr: bool) {
         let volume = self.volume;
+        let samples_duration = duration as u32 * self.sample_rate / 1000;
 
-        let (sustain, samples_attack, samples_decay, samples_release, wave);
+        let (sustain, samples_attack, samples_decay, samples_release, samples_total, wave);
         if adsr {
             sustain = self.sustain;
-            samples_attack = ATTACK[self.attack] * self.samples_rate / 1000;
-            samples_decay = DECAY[self.decay] * self.samples_rate / 1000;
-            samples_release = RELEASE[self.release] * self.samples_rate / 1000;
+            samples_attack = ATTACK[self.attack] * self.sample_rate / 1000;
+            samples_decay = DECAY[self.decay] * self.sample_rate / 1000;
+            samples_release = RELEASE[self.release] * self.sample_rate / 1000;
+            samples_total = samples_attack + samples_decay + max(0, samples_duration as i64 - samples_attack as i64 - samples_decay as i64) as u32 + samples_release;
             wave = self.wave.clone();
         } else {
             sustain = volume;
             samples_attack = 0;
             samples_decay = 0;
             samples_release = 0;
+            samples_total = samples_duration;
             wave = Wave::Pulse;
         }
 
         let mut gen = self.gen.lock().unwrap();
-        *gen = Some(Generator {
+        *gen = Generator {
             volume: volume * self.max_volume,
             sustain: sustain * self.max_volume,
             wave: wave,
@@ -125,18 +136,18 @@ impl Apu {
             samples_decay: samples_decay as f32,
             samples_release: samples_release as f32,
 
-            samples_total: (duration as u32 * self.samples_rate / 1000 + samples_release) as f32,
-            samples_period: (self.samples_rate / frequency as u32) as f32,
+            samples_total: samples_total as f32,
+            samples_period: (self.sample_rate / frequency as u32) as f32,
 
-            samples_index: 0.0,
-        });
+            samples_count: 0.0,
+        };
 
-        self.event_loop.play(self.voice_id.clone());
+        self.event_loop.play_stream(self.stream_id.clone());
     }
 
     /// Stop the currently playing sound
     pub fn stop(&mut self) {
-        self.event_loop.pause(self.voice_id.clone());
+        self.event_loop.pause_stream(self.stream_id.clone());
     }
 }
 
@@ -145,7 +156,7 @@ enum Wave {
     Triangle,
     Sawtooth,
     Pulse,
-    Noise(XorShiftRng),
+    Noise(SmallRng),
 }
 
 impl Wave {
@@ -154,7 +165,7 @@ impl Wave {
             0 => Wave::Triangle,
             1 => Wave::Sawtooth,
             2 => Wave::Pulse,
-            3 => Wave::Noise(weak_rng()),
+            3 => Wave::Noise(SmallRng::from_entropy()),
             _ => return Err(format!("Unknown Wave 0x{:02X}", byte)),
         })
     }
@@ -164,7 +175,7 @@ impl Wave {
             Wave::Triangle => (4.0 / period) * ((index % period) - (period / 2.0)).abs() - 1.0,
             Wave::Sawtooth => (2.0 / period) * (index % period) - 1.0,
             Wave::Pulse => if index % period < (period / 2.0) { 1.0 } else { -1.0 },
-            Wave::Noise(ref mut rng) => rng.gen_range(-1.0, 1.0),
+            Wave::Noise(ref mut rng) => rng.sample(Uniform::new_inclusive(-1.0, 1.0)),
         }
     }
 }
@@ -180,30 +191,50 @@ pub struct Generator {
     samples_total: f32,
     samples_period: f32,
 
-    samples_index: f32,
+    samples_count: f32,
+}
+
+impl Generator {
+    fn silence() -> Generator {
+        Generator {
+            volume: 0.0,
+            sustain: 0.0,
+            wave: Wave::Pulse,
+            samples_attack: 0.0,
+            samples_decay: 0.0,
+            samples_release: 0.0,
+            samples_total: 0.0,
+            samples_period: 0.0,
+            samples_count: 0.0,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.samples_count == self.samples_total
+    }
 }
 
 impl Iterator for Generator {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.samples_index >= self.samples_total {
+        if self.is_finished() {
             return Some(0.0);
         }
 
-        let mut sample = self.wave.sample(self.samples_index, self.samples_period);
+        let mut sample = self.wave.sample(self.samples_count, self.samples_period);
 
-        if self.samples_index < self.samples_attack { // Attack
-            sample *= self.volume * (self.samples_index / self.samples_attack);
-        } else if self.samples_index < self.samples_attack + self.samples_decay { // Decay
-            sample *= self.sustain + (self.volume - self.sustain) * (1.0 - self.samples_index / self.samples_decay)
-        } else if self.samples_index >= self.samples_total - self.samples_release { // Release
-            sample *= self.sustain * (1.0 - (self.samples_index - (self.samples_total - self.samples_release)) / self.samples_release)
+        if self.samples_count < self.samples_attack { // Attack
+            sample *= self.volume * (self.samples_count / self.samples_attack);
+        } else if self.samples_count < self.samples_attack + self.samples_decay { // Decay
+            sample *= self.sustain + (self.volume - self.sustain) * (1.0 - ((self.samples_count - self.samples_attack) / self.samples_decay));
+        } else if self.samples_count >= self.samples_total - self.samples_release { // Release
+            sample *= self.sustain * (1.0 - ((self.samples_count - (self.samples_total - self.samples_release)) / self.samples_release));
         } else {
             sample *= self.sustain;
         }
 
-        self.samples_index += 1.0;
+        self.samples_count += 1.0;
         Some(sample)
     }
 }

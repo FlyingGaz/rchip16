@@ -3,7 +3,7 @@ use std::io::Write;
 use std::collections::HashSet;
 use std::process;
 
-use cpu::*;
+use crate::cpu::*;
 
 pub struct Debugger {
     run: bool,

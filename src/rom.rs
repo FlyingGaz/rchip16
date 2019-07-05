@@ -4,7 +4,7 @@ use std::path::Path;
 use std::io::prelude::*;
 use std::io::Result;
 
-use util::*;
+use crate::util::*;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct Version(pub u8, pub u8);

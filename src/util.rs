@@ -52,7 +52,7 @@ pub fn crc32(stream: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use util::*;
+    use crate::util::*;
 
     #[test]
     fn bitflag_works() {

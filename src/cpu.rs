@@ -1,13 +1,14 @@
-pub mod instruction;
+mod instructions;
 
-use rand::{weak_rng, XorShiftRng};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
-use gpu::Gpu;
-use apu::Apu;
-use rom::Rom;
-use util::*;
+use crate::apu::Apu;
+use crate::gpu::Gpu;
+use crate::rom::Rom;
+use crate::util::*;
 
-use self::instruction::*;
+use instructions::*;
 
 pub struct Cpu {
     /// CPU registers
@@ -19,7 +20,7 @@ pub struct Cpu {
     /// The APU
     apu: Apu,
     /// The random number generator
-    rng: XorShiftRng,
+    rng: SmallRng,
     /// Flag to signal that the cpu is waiting for `VBLNK`
     wait_vblank: bool,
 }
@@ -52,7 +53,7 @@ impl Cpu {
             memory: memory,
             gpu: gpu,
             apu: apu,
-            rng: weak_rng(),
+            rng: SmallRng::from_entropy(),
             wait_vblank: false,
         }
     }

@@ -2,8 +2,8 @@ use std::fmt::Write;
 
 use rand::Rng;
 
-use cpu::Cpu;
-use util::*;
+use super::Cpu;
+use crate::util::*;
 
 macro_rules! instructions {
     ($( $byte:pat => ($mnemonic:expr, [$( $parm:ident ),*], $action:expr) ),*) => {
@@ -170,7 +170,7 @@ instructions! {
 }
 
 /// Test a given condition and return the result
-fn condition(cpu: &mut Cpu, cond: u8) -> bool {
+fn condition(cpu: &Cpu, cond: u8) -> bool {
     match cond {
         0x0 => cpu.zero(), // Equal
         0x1 => !cpu.zero(), // Not equal

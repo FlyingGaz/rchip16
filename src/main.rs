@@ -1,7 +1,3 @@
-extern crate cpal;
-extern crate minifb;
-extern crate rand;
-
 mod cpu;
 mod gpu;
 mod apu;
@@ -80,6 +76,7 @@ fn main() {
         }
 
         cpu.render(&mut winbuf);
+
         win.update_with_buffer(&winbuf).unwrap();
 
         let delta = start.elapsed();

@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 use std::mem::swap;
 
-use util::*;
+use crate::util::*;
 
 static DEFAULT_PALETTE: [u32; 16] = [
     0x000000, // Black (transparent in `FG`)

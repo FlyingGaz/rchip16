@@ -2,8 +2,9 @@
 name = "rchip16"
 version = "0.1.0"
 authors = ["FlyingGaz <FlyingGaz@users.noreply.github.com>"]
+edition = "2018"
 
 [dependencies]
-rand = "0.3.18"
-minifb = "0.10.3"
-cpal = "0.6.0"
+rand = { version = "0.7.0", features = ["small_rng"] }
+minifb = "0.11.2"
+cpal = "0.9.0"
